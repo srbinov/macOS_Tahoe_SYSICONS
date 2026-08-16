@@ -3,7 +3,6 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import Qt5Compat.GraphicalEffects
 //import QtQuick.Shapes 1.17
-import org.kde.breeze.components
 import "components"
 
 
@@ -15,8 +14,11 @@ Rectangle {
     property int sizeAvatar: 80
     property int longitudMasLarga: 0
 
-    property int lastIndexUser: user.currentIndex
-    property string lastNameUser: user.currentText
+    // "user" (a combobox/list this was presumably bound to) doesn't exist
+    // anywhere in this theme -- the real account picker is listuser below.
+    property int lastIndexUser: listuser.currentIndex
+    property string lastNameUser: listuser.currentIndex >= 0 && listuser.currentIndex < jUser.count
+        ? jUser.get(listuser.currentIndex).name : ""
     property int implicitCustomWidth: 0
     property ListModel jUser: users.usersList
     property bool firtInteraction: true
@@ -193,7 +195,6 @@ Rectangle {
                 highlighted: session.highlightedIndex === index
                 hoverEnabled: session.hoverEnabled
                 onClicked: {
-                    ava.source = "/var/lib/AccountsService/icons/" + user.currentText
                     session.currentIndex = index
                     slistview.currentIndex = index
                     session.popup.close()
@@ -215,7 +216,7 @@ Rectangle {
             }
             popup: Popup {
                 width: parent.width
-                height: parent.height * menuitems.count
+                height: parent.height * session.count
                 implicitHeight: slistview.contentHeight
                 margins: 0
                 contentItem: ListView {
@@ -298,7 +299,11 @@ Rectangle {
         anchors.bottomMargin: 40
         color: "transparent"
 
-        Column {
+        Item {
+            // Was a Column, but its children position themselves via
+            // explicit anchors (bottom/verticalCenter/etc against siblings
+            // like usernametext) which Column silently ignores/warns about --
+            // a plain Item imposes no layout policy so those anchors work.
             id: sectionLogin
             height: parent.height
             width: parent.width

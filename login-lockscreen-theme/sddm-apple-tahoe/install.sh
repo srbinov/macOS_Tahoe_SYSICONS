@@ -19,7 +19,10 @@ cp -r "$DIR/Apple-cursors" /usr/share/icons/Apple-cursors
 
 echo "==> Installing SF Pro Display fonts to /usr/share/fonts/"
 mkdir -p /usr/share/fonts/apple-tahoe
+# Case-insensitive glob -- the bundled files ship as *.OTF, not *.otf.
+shopt -s nocaseglob
 cp "$DIR"/sf-pro-display/*.otf /usr/share/fonts/apple-tahoe/
+shopt -u nocaseglob
 fc-cache -f >/dev/null
 
 echo "==> Setting Apple.Tahoe as the default SDDM theme"

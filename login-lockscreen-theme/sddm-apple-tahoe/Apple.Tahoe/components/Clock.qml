@@ -20,11 +20,18 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
-import org.kde.plasma.core as PlasmaCore
-import org.kde.plasma.plasma5support as Plasma5Support
 
 ColumnLayout {
     spacing: 2
+
+    property date currentTime: new Date()
+    Timer {
+        interval: 1000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: currentTime = new Date()
+    }
 
         FontLoader {
         id: fontbold
@@ -32,7 +39,7 @@ ColumnLayout {
     }
     readonly property bool softwareRendering: GraphicsInfo.api === GraphicsInfo.Software
     Label {
-        text: Qt.formatDateTime(new Date(), "dddd, MMMM d")
+        text: Qt.formatDateTime(currentTime, "dddd, MMMM d")
         color: "white"
         opacity: 0.5
         style: softwareRendering ? Text.Outline : Text.Normal
@@ -45,7 +52,7 @@ ColumnLayout {
 
     }
     Label {
-        text: Qt.formatDateTime(new Date(), "h:mm")
+        text: Qt.formatDateTime(currentTime, "h:mm")
         color: "white"
         opacity: 0.5
         style: softwareRendering ? Text.Outline : Text.Normal
@@ -55,12 +62,6 @@ ColumnLayout {
         Layout.alignment: Qt.AlignHCenter
         font.family: fontbold.name
 
-    }
-    Plasma5Support.DataSource {
-        id: timeSource
-        engine: "time"
-        connectedSources: ["Local"]
-        interval: 1000
     }
 
 }
