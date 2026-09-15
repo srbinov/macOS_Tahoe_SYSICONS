@@ -1,25 +1,667 @@
-# Agent handoff: icon appearance, dock order, hide-during-swap, TV mirroring
-This is a pass-off note for another agent. It describes **how these pieces actually work on peachOS**, why the old approaches failed, and what not to break. Paths are from the peachOS repo unless marked **live laptop**. **Section 2b** is the dock-bug log (shuffle flicker, glass hole, running dots, About window, struts, badges, OBS).
-This is a pass-off note for another agent. It describes **how these pieces actually work on peachOS**, why the old approaches failed, and what not to break. Paths are from the peachOS repo unless marked **live laptop**. **Section 2b** is the dock-bug log. **Section 4** is the Tahoe-style Apps overlay (and the ScrollView crash that disabled the top bar).
-Live overlay on Chris’s XPS (do **not** run `provision/provision.sh`):
+Agent handoff: icon appearance, dock order, hide-during-swap, TV mirroring
 
-[250 lines collapsed]
+This is a pass-off note for another agent. It describes how these pieces actually work on peachOS, why the old approaches failed, and what not to break. Paths are from the peachOS repo unless marked live laptop. Section 2b is the dock-bug log. Section 4 is the Tahoe-style Apps overlay (and the ScrollView crash that disabled the top bar).
 
----
-## 4. Mirror / extend to a TV (not Apple AirPlay)
-## 4. Apps overlay (Tahoe Apps, not classic Launchpad)
-Dock icon **Apps** (`peachos-applauncher.desktop`) is **not** a GTK window. It toggles a full-screen GNOME Shell overlay owned by `macos-top-panel@local.dev`. Target look is macOS 26/27 Apps: wallpaper still visible, dark search pill, category tabs, rounded glass panel, **vertical scroll** (no page-dots).
-### Files (repo → live overlay)
-| Role | Repo | Live laptop |
-|---|---|---|
-| Overlay | `extensions/macos-top-panel@local.dev/lib/appLauncher.js` | `~/.local/share/gnome-shell/extensions/macos-top-panel@local.dev/lib/appLauncher.js` |
-| CSS | same extension `stylesheet.css` (`.macos-applauncher-*`) | same live path |
-| Enable wiring | `extensions/macos-top-panel@local.dev/extension.js` (`new AppLauncherOverlay()` in `enable()`) | live `extension.js` |
-| Dock launcher | `apps/applauncher/peachos-applauncher` + `.desktop` | already on PATH / applications |
-Copy **both** JS and CSS into the live UUID, then **log out** (ESM + stylesheet cache). Do **not** `gnome-extensions disable macos-top-panel@local.dev` to reload — that blanks the panel.
-D-Bus: `org.peachos.AppLauncher` `/org/peachos/AppLauncher` method `Toggle`. The shell script calls that; if the name is missing it falls back to `org.gnome.Shell.ShowApplications` (stock GNOME grid).
-### Layout (what to replicate)
-```
+Live overlay on Chris’s XPS (do not run provision/provision.sh):
+
+
+
+
+
+Settings: ~/.local/share/peachos/settings/src/main.py via ~/.local/bin/peachos-settings
+
+
+
+Icon tool: ~/.local/share/peachos/iconmasker/peachos-icon-appearance
+
+
+
+Top bar: ~/.local/share/gnome-shell/extensions/macos-top-panel@local.dev
+
+
+
+Running dock UUID is macos-dock-2.00@local, not macos-dock-2026-peachos@peachos. Repo dock files were rsynced onto that live UUID. GNOME 45+ caches ESM JS until logout — disk patches to dock/top-panel JS do not load until the next session. msg-to-ext eval does run against the live dock object.
+
+
+
+Do not live-disable macos-top-panel@local.dev (blanks the panel). Do not restart gnome-shell unless the user logs out.
+
+
+
+
+
+1. Light / dark (and custom) app icons
+
+
+
+What the user sees
+
+Settings → Appearance → icon style:
+
+
+
+
+
+Default = light-mode icons (MacTahoe / peachOS curated / peachos-icon-watcherd masks)
+
+
+
+Dark = hand-authored dark tiles for apps we ship art for; everything else stays light
+
+
+
+Custom = per-app Default / Dark / uploaded file (Manage Custom Icons)
+
+This is not a GTK theme swap and not auto-tinted light icons. Dark mode only uses real curated files.
+
+How switching is implemented
+
+Tool: apps/iconmasker/peachos-icon-appearance
+
+peachos-icon-appearance <default|dark|custom>
+
+Must be invoked with python, not as a bare executable. User-local copies are often mode 644. Settings does:
+
+[sys.executable, ICON_APPEARANCE_SCRIPT, style_id]
+
+See icon_appearance_argv() in apps/settings/src/appearance_page.py.
+
+User-local overrides only — never rewrite /usr/share/applications
+
+Each styled app gets:
+
+
+
+
+
+~/.local/share/applications/<id>.desktop — copy of the system launcher with only Icon= changed, plus marker X-PeachOS-AppearanceOverride=true
+
+
+
+~/.local/share/icons/peachos-dark/<slug>.svg (or .png) — copy of curated dark art
+
+XDG already prefers ~/.local/share/applications over /usr/share. The system .desktop files stay untouched so they don’t fight peachos-icon-watcherd (the light-mode masking daemon) and so GNOME’s app-picker-layout doesn’t get corrupted by a burst of writes to files Shell watches.
+
+Default = delete our override files (or restore a .peachos-original backup). The original system launcher (light-masked) becomes visible again. No image processing.
+
+Switching dark → custom or custom → dark always runs apply_default() first, then the new style. apply_custom() only writes apps in the manifest; without the reset, leftover Dark overrides would stick.
+
+How an app is matched to dark art
+
+apps/iconmasker/peachos_icon_resolve.py:
+
+
+
+
+
+resolve_dark_for_app(desktop_path, icon, name) tokens: Name=, desktop id, Icon= basename
+
+
+
+find_dark_svg(slug) walks, in order:
+
+
+
+
+
+~/.local/share/icons/peachos-darkmode-src/
+
+
+
+/usr/share/icons/peachos-darkmode-src/
+
+
+
+repo assets/app-icons/darkmode/ and assets/app-icons/presets/darkmode/
+
+
+
+CURATED_DARK_SLUGS maps known light icon files (Mail, Notes, Messages, Calendar, presets, …) to those slugs
+
+
+
+Third-party apps: apps/iconmasker/peachos_icon_presets_registry.py. Every preset has assets/app-icons/presets/darkmode/<slug>.svg even if it is a byte-identical copy of light. That is the rule: “no separate dark art” means pixel-identical, not “run the auto-dark generator.”
+
+The watcher must not remask these dirs. OWN_DIRS in peachos_icon_resolve.py includes peachos-dark, peachos-darkmode-src, peachos-presets, icloud-for-linux, etc. If a dark Icon= path is treated as uncurated, the watcher overwrites it with a light mask within a few seconds. That was a real bug.
+
+Enumeration pitfalls (already fixed — do not reintroduce)
+
+_enumerate_candidates() in peachos-icon-appearance:
+
+
+
+
+
+Scan order: /usr/share/applications, snap, Flatpak exports, then ~/.local/share/applications
+
+
+
+Dedup by desktop filename, first-seen wins (matches $XDG_DATA_DIRS)
+
+
+
+Do not mark a name “seen” if the file was skipped (NoDisplay, not Type=Application). Otherwise a hidden apt stub (Text Editor) blocks the real Flatpak launcher
+
+
+
+Flatpak apps must be scanned (/var/lib/flatpak/exports/share/applications). Missing that meant Dark mode silently did nothing for Calendar / Weather / etc.
+
+
+
+Permanent user launchers (Calendar’s iCloud icon, immutable Telegram/Discord .desktop with chattr +i) are snapshotted as <file>.peachos-original before we stamp the override marker. apply_default() restores the backup instead of deleting into a generic Flatpak icon. Skip chattr -i on Telegram/Discord unless the user asks
+
+
+
+_write_override() must not abort the whole run if one file is immutable; log and continue or the UI can show Default while half the dock is already dark
+
+
+
+Adding a new dark icon
+
+
+
+
+
+Drop art in assets/app-icons/darkmode/<slug>.svg or presets/ + presets/darkmode/
+
+
+
+Register the slug in CURATED_DARK_SLUGS and/or PRESETS
+
+
+
+Copy to live ~/.local/share/icons/peachos-darkmode-src/ if testing without provision
+
+
+
+Re-run peachos-icon-appearance dark
+
+
+
+
+
+2. Dock apps shuffling when icons change
+
+
+
+Root cause
+
+peachos-icon-appearance rewrites many .desktop files in one burst. GNOME dash.js _redisplay() assumes only one item moved at a time. If several GDesktopAppInfos re-resolve in the same second, it “remove[s] all the launchers and add[s] them back in a new order.”
+
+peachOS dock (macos-dock-2026 / live macos-dock-2.00@local) wraps that dash and rebuilds from dash._box child order on installed-changed. So a style switch reshuffles every pinned app.
+
+org.gnome.shell favorite-apps is not a complete order: running-but-unpinned apps are in the dock and missing from that list. Restoring only favorites drops those apps and they land wherever _appChildren() enumerates them.
+
+What exists on the bus (older freeze)
+
+extensions/macos-top-panel@local.dev/lib/dockOrderGuard.js
+
+
+
+
+
+Session name: org.peachos.DockOrderGuard
+
+
+
+Path: /org/peachos/DockOrderGuard
+
+
+
+Methods: Snapshot(), Restore()
+
+
+
+Constructed from macos-top-panel@local.dev/extension.js (must stay enabled)
+
+
+
+Snapshot(): record each dash child’s app.get_id(), replace dash._queueRedisplay with a no-op
+
+
+
+Restore(): put _queueRedisplay back, box.set_child_at_index to the snapshot (not favorites), call dock _beginAnimation(), then 200ms later apply the snapshot again because the real _redisplay() is scheduled with Meta.later_add and can still reorder unpinned running apps
+
+
+
+Do not null _snapshot on Restore. Settings used to call Restore twice; the second call fell through to favorite-apps and shuffled unpinned apps
+
+
+
+Safety unfreeze: 45s if Settings dies mid-swap
+
+Current Settings does not call Guard Restore. Comments in appearance_page.py: Restore’s _queueRedisplay() is the scramble. The live swap uses dock msg-to-ext instead (next section). Leave the Guard in the top panel anyway — it is the in-process freeze if something else still Snapshots, and it documents the dash.js failure mode.
+
+What Settings does now (the path that actually runs)
+
+run_icon_appearance() in apps/settings/src/appearance_page.py:
+
+
+
+
+
+Snapshot app-picker-layout and favorite-apps (GSettings), restore them after the subprocess even if dash actors stayed put
+
+
+
+_eval_dock(_DOCK_IA_BEGIN_JS) — freeze + hide (below)
+
+
+
+Wait ~420ms for the slide-out
+
+
+
+Run peachos-icon-appearance
+
+
+
+Put GSettings layout/favorites back
+
+
+
+_eval_dock(_DOCK_IA_FINISH_JS) — wait until live actors’ gicons match the new .desktop files, pin order, then slide in
+
+
+
+Poll $XDG_RUNTIME_DIR/peachos-ia-dock until it reads ready (or 10s timeout)
+
+_eval_dock writes JS to the running dock schema key msg-to-ext (org.gnome.shell.extensions.macos-dock). Schema dirs tried, in order: repo UUID, macos-dock-2.00@local, dash2dock-lite.
+
+Order pinning inside the dock eval
+
+The injected object is this._peachIA on the dock extension (this = extension instance):
+
+
+
+
+
+snapshot(d) → d._peachOrder = app.get_id() list from d.dash._box (includes unpinned running). Also snapshotRunning(d) → d._peachRunning window counts for the running dots.
+
+
+
+freeze(d) → no-op _queueRedisplay and wrap _redisplay (see “shuffle then revert” below)
+
+
+
+applyOrder(d) → set_child_at_index from _peachOrder, place the favorites|running separator after the last pinned app, never treat _extraIcons as a ghost, pin Trash/Downloads last, d._icons = null
+
+
+
+refreshIcons(d) → push new gicons onto existing actors from ~/.local/share/applications/<id>.desktop
+
+
+
+After reveal: armPin restores real _queueRedisplay so unpinned running apps can rematch, but _redisplay stays wrapped so pinOrder runs in the same turn
+
+
+
+keepPinned() re-applies every 350ms for 12 beats, then disarmPin after 20s (unwrap _redisplay). Do not null _peachRunning on disarm — AppSystem briefly reports 0 windows after a .desktop burst and that blanks the dots.
+
+Do not “fix order after a visible flicker.” Freeze before writes, keep _box stable, push new gicons onto existing actors, then show.
+
+
+
+
+
+2b. Dock bugs we actually hit (and how they were fixed)
+
+These all showed up on the live laptop while switching Default/Dark with apps running. Do not “simplify” them away.
+
+Shuffle, then it snaps back (visible flicker)
+
+What it looked like: icons jump into a random order for a moment, then revert to the right order.
+
+Why: dash._queueRedisplay() does not rebuild synchronously. It queues Meta.later_add / deferred work; the real scramble is dash._redisplay(). An older pin did:
+
+
+
+
+
+call original _queueRedisplay (schedules scramble)
+
+
+
+GLib.timeout_add(..., 220, pinOrder) — restore after that frame had already painted
+
+That 220ms delay is the flicker. DockOrderGuard had the same pattern (POST_REDISPLAY_REAPPLY_MS).
+
+Fix: wrap _redisplay itself:
+
+dash._peachOrigRedisplay = proto._redisplay.bind(dash);
+dash._redisplay = function(){
+  origR.apply(dash, arguments);
+  if (d._peachPinActive) pinOrder(d);
+};
+
+pinOrder (applyOrder + refreshIcons + _beginAnimation) runs before Clutter paints. No timeout. _peachPinActive is set in freeze / armPin / thawOnce and cleared in disarmPin.
+
+Do not go back to “queue orig, wait 200–220ms, applyOrder.” That will always flash.
+
+Ugly glass hole / Trash tray collapsed after a dark swap
+
+What it looked like: extra gap in the glass before Trash, or Trash/Downloads sitting on width-0 space, dock “acting weird” with unpinned running apps.
+
+Why (two layers):
+
+
+
+
+
+dock.js _findIcons() used to remove_child every dash-separator from dash._box. Trash/Downloads live in _extraIcons, which is itself a child of _box, and _extraIcons has its own separator. Wiping box separators left a hole after a swap. Fix in dock.js: only extra box separators, never _extraIcons children; do not remove_child the extras container.
+
+
+
+applyOrder treated any _box child with no app id as a ghost (visible=false, width=0). _extraIcons has no app id → Trash/Downloads container forced to width 0. Confirmed live: extraW=0 while children were still 56px. Animator still drew them, glass/layout did not.
+
+Fix in applyOrder: skip d._extraIcons when collecting ghosts; after placing apps, restore extra.visible = true, width/height = -1, set_child_at_index(extra, last).
+
+Running dots disappear on icon swap
+
+After the .desktop burst, getAppWindowsFiltered / get_n_windows can briefly return 0. animator.js now falls back to dock._peachRunning[appId] (filled by snapshotRunning, refreshed in pinOrder). Do not d._peachRunning = null in disarmPin.
+
+Unpinned running apps also need thawOnce (one real _queueRedisplay while still hidden) so Dash rematches them; freeze-only left them stuck on old actors / missing from the running section. thawOnce still wraps _redisplay so that one rebuild does not paint a shuffle.
+
+Favorites | running separator in the wrong place
+
+applyOrder used to pack every app to the front and leave the GNOME dash-separator at the end of _box (empty glass before Trash). It now sits at lastFav + 1 when unpinned running apps exist, and is hidden otherwise.
+
+About This PC showing as a dock app
+
+The About window is a separate gjs -m aboutWindow.js process (com.github.kemma.KiwiMenu.About). Window tracker often tags it as GJS, not KiwiMenu, so an id-prefix filter misses it.
+
+Fix: dashFilter.js + dock _inspectIcon hide by window title About This PC / peachySearch and wm_class containing kiwimenu. aboutWindow.js sets GLib.set_prgname('com.github.kemma.KiwiMenu.About') and set_application_name('About This PC'). Live overlay + msg-to-ext wrap of get_running — disk JS will not load until logout.
+
+Maximized window gap under the dock
+
+Work-area gap is dock struts (affectsStruts). Extra iconSize * 0.2 left a wallpaper strip. Live animator.js: strut so the dock overlaps the maximized window by 1px (WINDOW_OVERLAP = 1). Apply via msg-to-ext / overlay; ESM cache until logout.
+
+Notification badges
+
+Cairo Dot overlays. Size iconW * 0.368, position x = renderer.x + iconW - D * 0.94, y = renderer.y - D * 0.08. Font SF Pro Rounded Medium (drawing.js draw_text_ink_centered). Inter Heavy was not installed.
+
+OBS does not record the dock
+
+The dock is GNOME Shell chrome (dash actors are opacity 0; the visible plate is renderArea). Window Capture never sees it — use Display Capture. Autohide / window-dodge also slides the dock away when OBS is maximized, so it will not be in the recording. Not an icon-swap bug.
+
+
+
+
+
+3. Hiding the dock while icons change
+
+Same _peachIA.begin() / .finish() / .abort() blob in appearance_page.py.
+
+Begin (hide)
+
+
+
+
+
+Write $XDG_RUNTIME_DIR/peachos-ia-dock = pending
+
+
+
+self._iconAppearanceHold = true
+
+
+
+Force autohide_dash = false and disable each dock’s autohider so autohide doesn’t fight the animation
+
+
+
+Clear icon_map_cache / app_map_cache
+
+
+
+For each dock: freeze redisplay, replace slideIn with a no-op (holdSlide), snapshot order, slideOut()
+
+The no-op slideIn matters: GNOME/autohide will try to bring the dock back while .desktop files are still changing. Hold it off-screen until icons actually match.
+
+Finish (show only when icons are really new)
+
+Do not slide in when the subprocess exits. Dash actors still show old gicons for a bit.
+
+Poll every 120ms:
+
+
+
+
+
+refreshIcons(d) — reload Gio.DesktopAppInfo from ~/.local/share/applications/<id> first, then Gio.DesktopAppInfo.new(id), assign gicon onto c._icon, c._grid, c._renderer, c.child.icon
+
+
+
+applyOrder(d)
+
+
+
+iconsMatch(d) — compare path/names of wanted vs current gicon; require at least 4 checked icons
+
+Ready when iconsMatch succeeds 8 consecutive polls and at least 18 tries, or 70 tries (timeout). Then: apply order, _icons = null, restore real slideIn and call it, armPin (real _queueRedisplay + _redisplay wrap, not a 220ms timeout), restore autohide, keepPinned(), _iconAppearanceHold = false, write state ready.
+
+Abort
+
+If peachos-icon-appearance fails: restore order, reveal, disarm pin, restore autohide, write ready, un-busy the Appearance page.
+
+Timing constants (do not shrink blindly)
+
+
+
+
+
+
+
+Constant
+
+
+
+Value
+
+
+
+Why
+
+
+
+
+
+_DOCK_SLIDE_OUT_MS
+
+
+
+420
+
+
+
+Don’t start rewriting until the dock is off-screen
+
+
+
+
+
+icon match poll
+
+
+
+120ms
+
+
+
+Wait for actors, not process exit
+
+
+
+
+
+match streak
+
+
+
+8
+
+
+
+Avoid one lucky frame of stale cache
+
+
+
+
+
+_IA_READY_TIMEOUT_MS
+
+
+
+10000
+
+
+
+Settings UI must not hang
+
+
+
+
+
+_redisplay wrap
+
+
+
+same turn
+
+
+
+Pin order before paint; no 220ms delay
+
+
+
+
+
+keepPinned beats
+
+
+
+12 × 350ms
+
+
+
+Safety net while .desktop watches settle
+
+
+
+
+
+disarmPin
+
+
+
+20s
+
+
+
+Then unwrap _redisplay (was 8s; late scrambles had no pin)
+
+
+
+
+
+Guard SAFETY_UNFREEZE_MS
+
+
+
+45000
+
+
+
+Only if something still uses Snapshot(); must outlast a cold render
+
+
+
+
+
+4. Apps overlay (Tahoe Apps, not classic Launchpad)
+
+Dock icon Apps (peachos-applauncher.desktop) is not a GTK window. It toggles a full-screen GNOME Shell overlay owned by macos-top-panel@local.dev. Target look is macOS 26/27 Apps: wallpaper still visible, dark search pill, category tabs, rounded glass panel, vertical scroll (no page-dots).
+
+Files (repo → live overlay)
+
+
+
+
+
+
+
+Role
+
+
+
+Repo
+
+
+
+Live laptop
+
+
+
+
+
+Overlay
+
+
+
+extensions/macos-top-panel@local.dev/lib/appLauncher.js
+
+
+
+~/.local/share/gnome-shell/extensions/macos-top-panel@local.dev/lib/appLauncher.js
+
+
+
+
+
+CSS
+
+
+
+same extension stylesheet.css (.macos-applauncher-*)
+
+
+
+same live path
+
+
+
+
+
+Enable wiring
+
+
+
+extensions/macos-top-panel@local.dev/extension.js (new AppLauncherOverlay() in enable())
+
+
+
+live extension.js
+
+
+
+
+
+Dock launcher
+
+
+
+apps/applauncher/peachos-applauncher + .desktop
+
+
+
+already on PATH / applications
+
+Copy both JS and CSS into the live UUID, then log out (ESM + stylesheet cache). Do not gnome-extensions disable macos-top-panel@local.dev to reload — that blanks the panel.
+
+D-Bus: org.peachos.AppLauncher /org/peachos/AppLauncher method Toggle. The shell script calls that; if the name is missing it falls back to org.gnome.Shell.ShowApplications (stock GNOME grid).
+
+Layout (what to replicate)
+
 root (chrome, monitor-sized)
   dim          — light wash rgba(8,8,12,0.22), click closes. NOT the old 0.72 black Launchpad veil
   content      — centered column, scale 0.94→1 on open
@@ -30,51 +672,296 @@ root (chrome, monitor-sized)
       scroll   — 7 columns × 4 visible rows, overlay scrollbar
         gridHost (St.BoxLayout)  ← required, see crash below
           grid (St.Widget + Clutter.GridLayout)
-```
-Constants in `appLauncher.js`: `COLUMNS=7`, `VISIBLE_ROWS=4`, `CELL_WIDTH=118`, `CELL_HEIGHT=108`, `ICON_SIZE=62`. Dock actor is hidden by name `dashtodockContainer` while open. Escape / click dim closes. Excluded desktop ids: `peachos-applauncher.desktop`, `io.ulauncher.Ulauncher.desktop`.
-Categories come from `Gio.DesktopAppInfo.get_categories()` regexes on `CATEGORY_TABS`. Search filters `get_name()` / `get_generic_name()` across the current tab. `···` resets to All and clears the query.
-**No `Shell.BlurEffect`** on this overlay. Same rule as Control Center — it has crashed the session before (`docs/liquid-glass-style.md`). Glass is CSS only (translucent fill + vertical gradient + rim + inset top highlight).
-### Crash that disabled the top bar (do not reintroduce)
-On login after this restyle, `macos-top-panel@local.dev` went to **State: ERROR** (still listed in `enabled-extensions`, but not running). Journal:
-```
+
+Constants in appLauncher.js: COLUMNS=7, VISIBLE_ROWS=4, CELL_WIDTH=118, CELL_HEIGHT=108, ICON_SIZE=62. Dock actor is hidden by name dashtodockContainer while open. Escape / click dim closes. Excluded desktop ids: peachos-applauncher.desktop, io.ulauncher.Ulauncher.desktop.
+
+Categories come from Gio.DesktopAppInfo.get_categories() regexes on CATEGORY_TABS. Search filters get_name() / get_generic_name() across the current tab. ··· resets to All and clears the query.
+
+No Shell.BlurEffect on this overlay. Same rule as Control Center — it has crashed the session before (docs/liquid-glass-style.md). Glass is CSS only (translucent fill + vertical gradient + rim + inset top highlight).
+
+Crash that disabled the top bar (do not reintroduce)
+
+On login after this restyle, macos-top-panel@local.dev went to State: ERROR (still listed in enabled-extensions, but not running). Journal:
+
 TypeError: Object is of type St.Widget - cannot convert to StScrollable
 AppLauncherOverlay@.../lib/appLauncher.js  (set_child)
 enable@.../extension.js
-```
-GNOME 50 `St.ScrollView.set_child()` requires an **`St.Scrollable`**. `St.BoxLayout` is one. A bare `St.Widget` with `Clutter.GridLayout` is **not**. Putting the grid directly in the scroll view aborted `enable()` and took the **entire** top panel with it.
-**Correct:**
-```js
+
+GNOME 50 St.ScrollView.set_child() requires an St.Scrollable. St.BoxLayout is one. A bare St.Widget with Clutter.GridLayout is not. Putting the grid directly in the scroll view aborted enable() and took the entire top panel with it.
+
+Correct:
+
 this._gridHost = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
 this._grid = new St.Widget({layout_manager: new Clutter.GridLayout(), width: COLUMNS * CELL_WIDTH});
 this._gridHost.add_child(this._grid);
 this._scroll.set_child(this._gridHost);  // BoxLayout, never the grid widget
-```
-Same pattern as Wi-Fi/Bluetooth lists (`set_child(this._networksBox)` on a `St.BoxLayout`).
-`enable()` also wraps `new AppLauncherOverlay()` in **try/catch** and `logError`s so a future launcher bug cannot disable the rest of the panel. `disable()` already does `this._appLauncher?.destroy()`.
-If it happens again: `gnome-extensions info macos-top-panel@local.dev` → `State: ERROR`. Then `journalctl --user -b -g 'macos-top-panel'` for the TypeError. Fix disk + live overlay, then the user can enable it (no extra logout required for a failed-to-load extension — enable loads current files).
----
-## 5. Mirror / extend to a TV (not Apple AirPlay)
-Linux **cannot** AirPlay *to* a Roku. Roku AirPlay is Apple-only. peachOS uses **Miracast / Wi-Fi Display** (Roku “Screen mirroring”).
-### Packages / launchers (this laptop)
 
-[38 lines collapsed]
+Same pattern as Wi-Fi/Bluetooth lists (set_child(this._networksBox) on a St.BoxLayout).
 
----
-## 5. How to fix / extend this without breaking it
-## 6. How to fix / extend this without breaking it
-### Icons look wrong after Dark
+enable() also wraps new AppLauncherOverlay() in try/catch and logErrors so a future launcher bug cannot disable the rest of the panel. disable() already does this._appLauncher?.destroy().
 
-[18 lines collapsed]
+If it happens again: gnome-extensions info macos-top-panel@local.dev → State: ERROR. Then journalctl --user -b -g 'macos-top-panel' for the TypeError. Fix disk + live overlay, then the user can enable it (no extra logout required for a failed-to-load extension — enable loads current files).
 
-- Settings process started **before** `_DOCK_IA_*` blob edits — reopen Settings
-- `_peachPinActive` false while wrap still installed (wrap becomes a no-op; scramble sticks)
-### Apps overlay / top bar in ERROR
-- `St.ScrollView.set_child(St.Widget)` — must be `St.BoxLayout` (StScrollable)
-- `Shell.BlurEffect` on the overlay
-- `new AppLauncherOverlay()` not wrapped in try/catch (one throw blanks the whole panel)
-- Edited live overlay but expected it without logout (except: ERROR state → enable reloads files)
-- D-Bus name `org.peachos.AppLauncher` missing → dock script opens stock GNOME app grid
-### TV no picture
-- Screen mirroring off on the Roku
 
-[18 lines collapsed]
+
+
+
+5. Mirror / extend to a TV (not Apple AirPlay)
+
+Linux cannot AirPlay to a Roku. Roku AirPlay is Apple-only. peachOS uses Miracast / Wi-Fi Display (Roku “Screen mirroring”).
+
+Packages / launchers (this laptop)
+
+
+
+
+
+gnome-network-displays 0.99.0-1 — /usr/bin/gnome-network-displays
+
+
+
+Encoder: gstreamer1.0-fdkaac (fdkaacenc, rank primary). Do not rely on avenc_aac (rank none); TVs often get picture and no sound
+
+
+
+Also present: x264enc, openh264enc
+
+
+
+User launcher: ~/.local/share/applications/peachos-connect-tv.desktop
+Name: Connect to TV
+Exec: env NETWORK_DISPLAYS_AAC_ENC=fdkaacenc NETWORK_DISPLAYS_H264_ENC=x264enc gnome-network-displays
+
+
+
+Transient run: systemctl --user start peachos-network-displays.service if it was started with systemd-run --user --unit=peachos-network-displays
+
+Wi-Fi chip (Intel AX211) already exposes p2p-dev-wlp0s20f3. UFW is ENABLED=no in /etc/ufw/ufw.conf.
+
+TV side
+
+Roku: Settings → System → Screen mirroring → Prompt or Always allow.
+
+In the app: pick the TV. This screen = mirror. Virtual screen (0.91+) = closest thing to extend (compressed extra desktop, not a real DRM connector). HDMI is still the only low-latency true extend.
+
+Audio: why speakers stayed on, and the router
+
+GND creates a PipeWire null sink named like gnome_network_displays_gnome-ne (“GNOME Network Displays”) and captures its monitor for AAC. Apps still play to the default sink (laptop speakers) unless that default is switched.
+
+Live helper:
+
+
+
+
+
+Script: ~/.local/share/peachos/tv-audio/peachos-tv-audio
+
+
+
+Unit: ~/.config/systemd/user/peachos-tv-audio.service (WantedBy=graphical-session.target)
+
+Behavior:
+
+
+
+
+
+pactl subscribe until a sink matching gnome_network_displays appears
+
+
+
+Save previous default sink
+
+
+
+pactl set-default-sink to the TV sink and move-sink-input all current streams
+
+
+
+When the TV sink vanishes (cast ended), restore the previous sink and move streams back
+
+This does not invent a second audio protocol. If the Roku never negotiates WFD AAC 48 kHz stereo (modes & 0x1 in gnome-network-displays wfd-client.c), GND sends video only. fdkaac makes AAC that actually muxes; it cannot add LPCM (GND does not implement LPCM). If a recast with fdkaac is still silent, inspect journalctl --user -u peachos-network-displays / G_MESSAGES_DEBUG=all for WfdAudioCodec: and An audiocodec has been selected.
+
+Debug env: NETWORK_DISPLAYS_AAC_ENC=fdkaacenc, NETWORK_DISPLAYS_H264_ENC=x264enc, G_MESSAGES_DEBUG=all.
+
+There is a separate app Mirror (app.mirror.Mirror.desktop) — that is an AirPlay receiver (phone → this laptop), the opposite direction. Do not confuse it with Connect to TV.
+
+
+
+
+
+6. How to fix / extend this without breaking it
+
+
+
+Icons look wrong after Dark
+
+
+
+
+
+Watcher remasking dark paths? Check OWN_DIRS / peachos-darkmode-src
+
+
+
+Flatpak not enumerated?
+
+
+
+NoDisplay stub stealing the desktop id?
+
+
+
+Immutable .desktop skipped (chattr +i Telegram/Discord)
+
+
+
+Missing slug in CURATED_DARK_SLUGS / PRESETS
+
+
+
+Ran the script without Python (Permission denied on 644)
+
+
+
+Dock shuffles (or shuffles then snaps back)
+
+
+
+
+
+Writes happening before freeze/slide-out
+
+
+
+Calling DockOrderGuard.Restore() or raw dash._queueRedisplay() as the “refresh icons” step
+
+
+
+Pinning with a timeout after _queueRedisplay (220ms / 200ms) instead of wrapping _redisplay
+
+
+
+Clearing the order snapshot and falling back to favorite-apps
+
+
+
+Treating _extraIcons as a ghost (width=0) or remove_childing its separator
+
+
+
+Sliding the dock in before iconsMatch
+
+
+
+Nulling _peachRunning (dots vanish; looks like a broken dock)
+
+
+
+Live dock UUID / msg-to-ext schema dir wrong (macos-dock-2.00@local)
+
+
+
+Edited dock JS on disk and expected it without logout; use msg-to-ext for live, disk for next session
+
+
+
+Settings process started before _DOCK_IA_* blob edits — reopen Settings
+
+
+
+_peachPinActive false while wrap still installed (wrap becomes a no-op; scramble sticks)
+
+
+
+Apps overlay / top bar in ERROR
+
+
+
+
+
+St.ScrollView.set_child(St.Widget) — must be St.BoxLayout (StScrollable)
+
+
+
+Shell.BlurEffect on the overlay
+
+
+
+new AppLauncherOverlay() not wrapped in try/catch (one throw blanks the whole panel)
+
+
+
+Edited live overlay but expected it without logout (except: ERROR state → enable reloads files)
+
+
+
+D-Bus name org.peachos.AppLauncher missing → dock script opens stock GNOME app grid
+
+
+
+TV no picture
+
+
+
+
+
+Screen mirroring off on the Roku
+
+
+
+Wi-Fi Direct / P2P blocked
+
+
+
+Using Flatpak GND (worse P2P); this machine uses the deb
+
+
+
+TV picture, no sound
+
+
+
+
+
+Default sink still speakers → tv-audio service dead?
+
+
+
+fdkaacenc missing
+
+
+
+Recast after installing fdkaac (old GND process won’t pick it up)
+
+
+
+Roku advertised only LPCM → GND cannot send LPCM today
+
+
+
+Safety (this laptop)
+
+
+
+
+
+No provision.sh
+
+
+
+No gnome-shell restart unless user logs out
+
+
+
+No disable/enable of macos-top-panel@local.dev live
+
+
+
+gsettings / gnome-extensions often need a real session (required_permissions: ["all"]); sandboxed dconf lies
+
+
+
+Agent sudo often has no TTY; pkexec can pop a GUI prompt
+)
+
