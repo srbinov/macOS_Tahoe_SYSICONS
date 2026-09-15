@@ -1,0 +1,80 @@
+# Agent handoff: icon appearance, dock order, hide-during-swap, TV mirroring
+This is a pass-off note for another agent. It describes **how these pieces actually work on peachOS**, why the old approaches failed, and what not to break. Paths are from the peachOS repo unless marked **live laptop**. **Section 2b** is the dock-bug log (shuffle flicker, glass hole, running dots, About window, struts, badges, OBS).
+This is a pass-off note for another agent. It describes **how these pieces actually work on peachOS**, why the old approaches failed, and what not to break. Paths are from the peachOS repo unless marked **live laptop**. **Section 2b** is the dock-bug log. **Section 4** is the Tahoe-style Apps overlay (and the ScrollView crash that disabled the top bar).
+Live overlay on Chris’s XPS (do **not** run `provision/provision.sh`):
+
+[250 lines collapsed]
+
+---
+## 4. Mirror / extend to a TV (not Apple AirPlay)
+## 4. Apps overlay (Tahoe Apps, not classic Launchpad)
+Dock icon **Apps** (`peachos-applauncher.desktop`) is **not** a GTK window. It toggles a full-screen GNOME Shell overlay owned by `macos-top-panel@local.dev`. Target look is macOS 26/27 Apps: wallpaper still visible, dark search pill, category tabs, rounded glass panel, **vertical scroll** (no page-dots).
+### Files (repo → live overlay)
+| Role | Repo | Live laptop |
+|---|---|---|
+| Overlay | `extensions/macos-top-panel@local.dev/lib/appLauncher.js` | `~/.local/share/gnome-shell/extensions/macos-top-panel@local.dev/lib/appLauncher.js` |
+| CSS | same extension `stylesheet.css` (`.macos-applauncher-*`) | same live path |
+| Enable wiring | `extensions/macos-top-panel@local.dev/extension.js` (`new AppLauncherOverlay()` in `enable()`) | live `extension.js` |
+| Dock launcher | `apps/applauncher/peachos-applauncher` + `.desktop` | already on PATH / applications |
+Copy **both** JS and CSS into the live UUID, then **log out** (ESM + stylesheet cache). Do **not** `gnome-extensions disable macos-top-panel@local.dev` to reload — that blanks the panel.
+D-Bus: `org.peachos.AppLauncher` `/org/peachos/AppLauncher` method `Toggle`. The shell script calls that; if the name is missing it falls back to `org.gnome.Shell.ShowApplications` (stock GNOME grid).
+### Layout (what to replicate)
+```
+root (chrome, monitor-sized)
+  dim          — light wash rgba(8,8,12,0.22), click closes. NOT the old 0.72 black Launchpad veil
+  content      — centered column, scale 0.94→1 on open
+    searchBar  — 460px pill, darker glass, search icon + St.Entry + "···"
+    panel      — liquid-glass plate (recipe in docs/liquid-glass-style.md), radius 28px
+      cats     — All / Utilities / Productivity / Social / Photo & Video / Games /
+                 Entertainment / Creativity / Information & Reading
+      scroll   — 7 columns × 4 visible rows, overlay scrollbar
+        gridHost (St.BoxLayout)  ← required, see crash below
+          grid (St.Widget + Clutter.GridLayout)
+```
+Constants in `appLauncher.js`: `COLUMNS=7`, `VISIBLE_ROWS=4`, `CELL_WIDTH=118`, `CELL_HEIGHT=108`, `ICON_SIZE=62`. Dock actor is hidden by name `dashtodockContainer` while open. Escape / click dim closes. Excluded desktop ids: `peachos-applauncher.desktop`, `io.ulauncher.Ulauncher.desktop`.
+Categories come from `Gio.DesktopAppInfo.get_categories()` regexes on `CATEGORY_TABS`. Search filters `get_name()` / `get_generic_name()` across the current tab. `···` resets to All and clears the query.
+**No `Shell.BlurEffect`** on this overlay. Same rule as Control Center — it has crashed the session before (`docs/liquid-glass-style.md`). Glass is CSS only (translucent fill + vertical gradient + rim + inset top highlight).
+### Crash that disabled the top bar (do not reintroduce)
+On login after this restyle, `macos-top-panel@local.dev` went to **State: ERROR** (still listed in `enabled-extensions`, but not running). Journal:
+```
+TypeError: Object is of type St.Widget - cannot convert to StScrollable
+AppLauncherOverlay@.../lib/appLauncher.js  (set_child)
+enable@.../extension.js
+```
+GNOME 50 `St.ScrollView.set_child()` requires an **`St.Scrollable`**. `St.BoxLayout` is one. A bare `St.Widget` with `Clutter.GridLayout` is **not**. Putting the grid directly in the scroll view aborted `enable()` and took the **entire** top panel with it.
+**Correct:**
+```js
+this._gridHost = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
+this._grid = new St.Widget({layout_manager: new Clutter.GridLayout(), width: COLUMNS * CELL_WIDTH});
+this._gridHost.add_child(this._grid);
+this._scroll.set_child(this._gridHost);  // BoxLayout, never the grid widget
+```
+Same pattern as Wi-Fi/Bluetooth lists (`set_child(this._networksBox)` on a `St.BoxLayout`).
+`enable()` also wraps `new AppLauncherOverlay()` in **try/catch** and `logError`s so a future launcher bug cannot disable the rest of the panel. `disable()` already does `this._appLauncher?.destroy()`.
+If it happens again: `gnome-extensions info macos-top-panel@local.dev` → `State: ERROR`. Then `journalctl --user -b -g 'macos-top-panel'` for the TypeError. Fix disk + live overlay, then the user can enable it (no extra logout required for a failed-to-load extension — enable loads current files).
+---
+## 5. Mirror / extend to a TV (not Apple AirPlay)
+Linux **cannot** AirPlay *to* a Roku. Roku AirPlay is Apple-only. peachOS uses **Miracast / Wi-Fi Display** (Roku “Screen mirroring”).
+### Packages / launchers (this laptop)
+
+[38 lines collapsed]
+
+---
+## 5. How to fix / extend this without breaking it
+## 6. How to fix / extend this without breaking it
+### Icons look wrong after Dark
+
+[18 lines collapsed]
+
+- Settings process started **before** `_DOCK_IA_*` blob edits — reopen Settings
+- `_peachPinActive` false while wrap still installed (wrap becomes a no-op; scramble sticks)
+### Apps overlay / top bar in ERROR
+- `St.ScrollView.set_child(St.Widget)` — must be `St.BoxLayout` (StScrollable)
+- `Shell.BlurEffect` on the overlay
+- `new AppLauncherOverlay()` not wrapped in try/catch (one throw blanks the whole panel)
+- Edited live overlay but expected it without logout (except: ERROR state → enable reloads files)
+- D-Bus name `org.peachos.AppLauncher` missing → dock script opens stock GNOME app grid
+### TV no picture
+- Screen mirroring off on the Roku
+
+[18 lines collapsed]
